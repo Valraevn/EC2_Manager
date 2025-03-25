@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EC2 Instance Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body class="bg-gray-100">
+    <nav class="bg-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex justify-between h-16">
+                <div class="flex">
+                    <div class="flex-shrink-0 flex items-center">
+                        <a href="{{ url_for('index') }}" class="text-xl font-bold text-gray-800">EC2 Manager</a>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    {% if current_user.is_authenticated %}
+                    <span class="text-gray-700 mr-4">Welcome, {{ current_user.username }}</span>
+                    <a href="{{ url_for('logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md">Logout</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4" role="alert">
+                        <p>{{ message }}</p>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+        function updateInstanceStatus(instanceId) {
+            $.get(`/instance/${instanceId}/status`, function(data) {
+                $(`#instance-${instanceId}-state`).text(data.state);
+                $(`#instance-${instanceId}-ip`).text(data.public_ip || 'N/A');
+            });
+        }
+
+        function startInstance(instanceId) {
+            $.get(`/instance/${instanceId}/start`, function(data) {
+                if (data.status === 'success') {
+                    setTimeout(() => updateInstanceStatus(instanceId), 5000);
+                }
+            });
+        }
+
+        function stopInstance(instanceId) {
+            $.get(`/instance/${instanceId}/stop`, function(data) {
+                if (data.status === 'success') {
+                    setTimeout(() => updateInstanceStatus(instanceId), 5000);
+                }
+            });
+        }
+
+        // Update instance status every 30 seconds
+        setInterval(function() {
+            $('.instance-status').each(function() {
+                const instanceId = $(this).data('instance-id');
+                updateInstanceStatus(instanceId);
+            });
+        }, 30000);
+    </script>
+</body>
+</html> 

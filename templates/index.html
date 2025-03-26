@@ -7,8 +7,8 @@
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h4 class="mb-0">EC2 Instances</h4>
-                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addInstanceModal">
-                        Add New Instance
+                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createInstanceModal">
+                        Create New Instance
                     </button>
                 </div>
                 <div class="card-body">
@@ -46,12 +46,20 @@
                                     <td>{{ instance.last_activity }}</td>
                                     <td>
                                         {% if instance.state == 'stopped' %}
-                                        <button class="btn btn-sm btn-success" onclick="startInstance('{{ instance.instance_id }}')">
+                                        <button class="btn btn-sm btn-success instance-action-btn" 
+                                                data-instance-id="{{ instance.instance_id }}"
+                                                onclick="handleInstanceAction('{{ instance.instance_id }}', 'start')">
                                             Start
                                         </button>
                                         {% elif instance.state == 'running' %}
-                                        <button class="btn btn-sm btn-danger" onclick="stopInstance('{{ instance.instance_id }}')">
+                                        <button class="btn btn-sm btn-danger instance-action-btn"
+                                                data-instance-id="{{ instance.instance_id }}"
+                                                onclick="handleInstanceAction('{{ instance.instance_id }}', 'stop')">
                                             Stop
+                                        </button>
+                                        {% elif instance.state in ['stopping', 'starting', 'pending', 'shutting-down'] %}
+                                        <button class="btn btn-sm btn-secondary" disabled>
+                                            {{ instance.state|title }}...
                                         </button>
                                         {% endif %}
                                     </td>
@@ -70,31 +78,211 @@
     </div>
 </div>
 
-<!-- Add Instance Modal -->
-<div class="modal fade" id="addInstanceModal" tabindex="-1">
-    <div class="modal-dialog">
+<!-- Create Instance Modal -->
+<div class="modal fade" id="createInstanceModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Add New Instance</h5>
+                <h5 class="modal-title">Create New EC2 Instance</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <form method="POST" action="{{ url_for('add_instance') }}">
+            <form method="POST" action="{{ url_for('create_instance') }}">
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label for="name" class="form-label">Instance Name</label>
-                        <input type="text" class="form-control" id="name" name="name" required>
+                        <label for="instance_name" class="form-label">Instance Name</label>
+                        <input type="text" class="form-control" id="instance_name" name="instance_name" required>
                     </div>
                     <div class="mb-3">
-                        <label for="instance_id" class="form-label">Instance ID</label>
-                        <input type="text" class="form-control" id="instance_id" name="instance_id" required>
+                        <label for="ami_id" class="form-label">AMI ID</label>
+                        <select class="form-select" id="ami_id" name="ami_id" required>
+                            <option value="">Select an AMI</option>
+                            <option value="ami-0c7217cdde317cfec">Amazon Linux 2023</option>
+                            <option value="ami-0c55b159cbfafe1f0">Ubuntu 22.04 LTS</option>
+                            <option value="ami-0735c191cf914754d">Windows Server 2019</option>
+                            <option value="custom">Custom AMI ID</option>
+                        </select>
+                    </div>
+                    <div class="mb-3 d-none" id="custom_ami_div">
+                        <label for="custom_ami" class="form-label">Custom AMI ID</label>
+                        <input type="text" class="form-control" id="custom_ami" name="custom_ami">
+                    </div>
+                    <div class="mb-3">
+                        <label for="instance_type" class="form-label">Instance Type</label>
+                        <select class="form-select" id="instance_type" name="instance_type" required>
+                            <option value="t2.micro">t2.micro (1 vCPU, 1 GiB RAM)</option>
+                            <option value="t2.small">t2.small (1 vCPU, 2 GiB RAM)</option>
+                            <option value="t2.medium">t2.medium (2 vCPU, 4 GiB RAM)</option>
+                            <option value="t2.large">t2.large (2 vCPU, 8 GiB RAM)</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="key_name" class="form-label">Key Pair</label>
+                        <select class="form-select" id="key_name" name="key_name" required>
+                            <option value="">Loading key pairs...</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="security_group" class="form-label">Security Group</label>
+                        <select class="form-select" id="security_group" name="security_group" required>
+                            <option value="">Loading security groups...</option>
+                        </select>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Add Instance</button>
+                    <button type="submit" class="btn btn-primary">Create Instance</button>
                 </div>
             </form>
         </div>
     </div>
 </div>
+
+<script>
+// Add to your existing JavaScript
+document.addEventListener('DOMContentLoaded', function() {
+    // Handle custom AMI selection
+    const amiSelect = document.getElementById('ami_id');
+    const customAmiDiv = document.getElementById('custom_ami_div');
+    
+    amiSelect.addEventListener('change', function() {
+        if (this.value === 'custom') {
+            customAmiDiv.classList.remove('d-none');
+            document.getElementById('custom_ami').setAttribute('required', '');
+        } else {
+            customAmiDiv.classList.add('d-none');
+            document.getElementById('custom_ami').removeAttribute('required');
+        }
+    });
+
+    // Load key pairs
+    fetch('/get_key_pairs')
+        .then(response => response.json())
+        .then(data => {
+            const keySelect = document.getElementById('key_name');
+            keySelect.innerHTML = '<option value="">Select a key pair</option>';
+            data.forEach(key => {
+                keySelect.innerHTML += `<option value="${key.name}">${key.name}</option>`;
+            });
+        });
+
+    // Load security groups
+    fetch('/get_security_groups')
+        .then(response => response.json())
+        .then(data => {
+            const sgSelect = document.getElementById('security_group');
+            sgSelect.innerHTML = '<option value="">Select a security group</option>';
+            data.forEach(sg => {
+                sgSelect.innerHTML += `<option value="${sg.id}">${sg.name} (${sg.id})</option>`;
+            });
+        });
+});
+
+function updateInstanceRow(instanceId, state, publicIp) {
+    const statusCell = document.getElementById(`instance-${instanceId}-status`);
+    const ipCell = document.getElementById(`instance-${instanceId}-ip`);
+    const actionCell = statusCell.parentElement.querySelector('.instance-action-btn')?.parentElement;
+    
+    if (statusCell) {
+        statusCell.textContent = state;
+    }
+    
+    if (ipCell && publicIp) {
+        ipCell.textContent = publicIp;
+    }
+    
+    if (actionCell) {
+        let buttonHtml = '';
+        if (state === 'running') {
+            buttonHtml = `
+                <button class="btn btn-sm btn-danger instance-action-btn" 
+                        data-instance-id="${instanceId}"
+                        onclick="handleInstanceAction('${instanceId}', 'stop')">
+                    Stop
+                </button>`;
+        } else if (state === 'stopped') {
+            buttonHtml = `
+                <button class="btn btn-sm btn-success instance-action-btn"
+                        data-instance-id="${instanceId}"
+                        onclick="handleInstanceAction('${instanceId}', 'start')">
+                    Start
+                </button>`;
+        } else {
+            buttonHtml = `
+                <button class="btn btn-sm btn-secondary" disabled>
+                    ${state.charAt(0).toUpperCase() + state.slice(1)}...
+                </button>`;
+        }
+        actionCell.innerHTML = buttonHtml;
+    }
+}
+
+function handleInstanceAction(instanceId, action) {
+    // Disable the button and show transitional state
+    const button = document.querySelector(`button[data-instance-id="${instanceId}"]`);
+    const statusCell = document.getElementById(`instance-${instanceId}-status`);
+    
+    if (button) {
+        button.disabled = true;
+        button.classList.remove('btn-success', 'btn-danger');
+        button.classList.add('btn-secondary');
+        button.textContent = action === 'start' ? 'Starting...' : 'Stopping...';
+    }
+    
+    if (statusCell) {
+        statusCell.textContent = action === 'start' ? 'pending' : 'stopping';
+    }
+    
+    // Make the API call
+    fetch(`/instance/${instanceId}/${action}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                // Start polling for status updates
+                pollInstanceStatus(instanceId);
+            } else {
+                // Show error and restore button
+                alert('Error: ' + data.message);
+                updateInstanceStatus(instanceId);
+            }
+        })
+        .catch(error => {
+            alert('Error: ' + error);
+            updateInstanceStatus(instanceId);
+        });
+}
+
+function pollInstanceStatus(instanceId) {
+    const pollInterval = setInterval(() => {
+        updateInstanceStatus(instanceId)
+            .then(data => {
+                if (data.state === 'running' || data.state === 'stopped') {
+                    clearInterval(pollInterval);
+                }
+            })
+            .catch(() => clearInterval(pollInterval));
+    }, 5000); // Poll every 5 seconds
+    
+    // Stop polling after 5 minutes to prevent infinite polling
+    setTimeout(() => clearInterval(pollInterval), 300000);
+}
+
+function updateInstanceStatus(instanceId) {
+    return fetch(`/instance/${instanceId}/status`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.state) {
+                updateInstanceRow(instanceId, data.state, data.public_ip);
+            }
+            return data;
+        });
+}
+
+// Update all instance statuses periodically
+setInterval(function() {
+    document.querySelectorAll('.instance-status').forEach(function(element) {
+        const instanceId = element.dataset.instanceId;
+        updateInstanceStatus(instanceId);
+    });
+}, 30000); // Update every 30 seconds
+</script>
 {% endblock %} 

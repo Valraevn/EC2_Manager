@@ -153,11 +153,7 @@ def get_instance_by_id(instance_id, user_id):
                     response = ec2.describe_instances(InstanceIds=[instance_id])
                     if response['Reservations']:
                         instance = response['Reservations'][0]['Instances'][0]
-                        # Check if instance belongs to user
-                        if 'Tags' in instance:
-                            for tag in instance['Tags']:
-                                if tag['Key'] == 'UserID' and tag['Value'] == str(user_id):
-                                    return instance, region
+                        return instance, region
                 except:
                     continue
         else:
@@ -166,11 +162,7 @@ def get_instance_by_id(instance_id, user_id):
             response = ec2.describe_instances(InstanceIds=[instance_id])
             if response['Reservations']:
                 instance = response['Reservations'][0]['Instances'][0]
-                # Check if instance belongs to user
-                if 'Tags' in instance:
-                    for tag in instance['Tags']:
-                        if tag['Key'] == 'UserID' and tag['Value'] == str(user_id):
-                            return instance, aws_region
+                return instance, aws_region
     except Exception as e:
         print(f"Error getting instance {instance_id}: {str(e)}")
     return None, None
@@ -435,6 +427,78 @@ def add_instance():
         
     except Exception as e:
         flash(f'Error adding instance: {str(e)}', 'danger')
+        return redirect(url_for('index'))
+
+@app.route('/get_key_pairs')
+@login_required
+def get_key_pairs():
+    try:
+        ec2 = get_ec2_client()
+        response = ec2.describe_key_pairs()
+        return jsonify([{
+            'name': key['KeyName'],
+            'id': key.get('KeyPairId', key['KeyName'])
+        } for key in response['KeyPairs']])
+    except Exception as e:
+        return jsonify([])
+
+@app.route('/get_security_groups')
+@login_required
+def get_security_groups():
+    try:
+        ec2 = get_ec2_client()
+        response = ec2.describe_security_groups()
+        return jsonify([{
+            'id': sg['GroupId'],
+            'name': sg['GroupName'],
+            'description': sg['Description']
+        } for sg in response['SecurityGroups']])
+    except Exception as e:
+        return jsonify([])
+
+@app.route('/create_instance', methods=['POST'])
+@login_required
+def create_instance():
+    try:
+        instance_name = request.form.get('instance_name')
+        ami_id = request.form.get('ami_id')
+        instance_type = request.form.get('instance_type')
+        key_name = request.form.get('key_name')
+        security_group = request.form.get('security_group')
+        
+        # Handle custom AMI ID
+        if ami_id == 'custom':
+            ami_id = request.form.get('custom_ami')
+        
+        if not all([instance_name, ami_id, instance_type, key_name, security_group]):
+            flash('All fields are required', 'danger')
+            return redirect(url_for('index'))
+        
+        ec2 = get_ec2_client()
+        
+        # Create the instance
+        response = ec2.run_instances(
+            ImageId=ami_id,
+            InstanceType=instance_type,
+            KeyName=key_name,
+            SecurityGroupIds=[security_group],
+            MinCount=1,
+            MaxCount=1,
+            TagSpecifications=[{
+                'ResourceType': 'instance',
+                'Tags': [
+                    {'Key': 'Name', 'Value': instance_name},
+                    {'Key': 'UserID', 'Value': str(current_user.id)}
+                ]
+            }]
+        )
+        
+        instance_id = response['Instances'][0]['InstanceId']
+        flash(f'Instance {instance_id} is being created', 'success')
+        return redirect(url_for('index'))
+        
+    except Exception as e:
+        flash(f'Error creating instance: {str(e)}', 'danger')
         return redirect(url_for('index'))
 
 def init_app():

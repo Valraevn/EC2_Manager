@@ -59,6 +59,7 @@
                                         </button>
                                         {% elif instance.state in ['stopping', 'starting', 'pending', 'shutting-down'] %}
                                         <button class="btn btn-sm btn-secondary" disabled>
+                                            <span class="spinner-border spinner-border-sm" role="status"></span>
                                             {{ instance.state|title }}...
                                         </button>
                                         {% endif %}
@@ -86,25 +87,24 @@
                 <h5 class="modal-title">Create New EC2 Instance</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <form method="POST" action="{{ url_for('create_instance') }}">
+            <form id="createInstanceForm" method="POST" action="{{ url_for('create_instance') }}">
                 <div class="modal-body">
                     <div class="mb-3">
                         <label for="instance_name" class="form-label">Instance Name</label>
                         <input type="text" class="form-control" id="instance_name" name="instance_name" required>
                     </div>
                     <div class="mb-3">
-                        <label for="ami_id" class="form-label">AMI ID</label>
+                        <label for="ami_id" class="form-label">AMI Selection</label>
                         <select class="form-select" id="ami_id" name="ami_id" required>
-                            <option value="">Select an AMI</option>
-                            <option value="ami-0c7217cdde317cfec">Amazon Linux 2023</option>
-                            <option value="ami-0c55b159cbfafe1f0">Ubuntu 22.04 LTS</option>
-                            <option value="ami-0735c191cf914754d">Windows Server 2019</option>
+                            <option value="">Loading AMIs...</option>
                             <option value="custom">Custom AMI ID</option>
                         </select>
+                        <div class="form-text">Select an Amazon Machine Image (AMI) for your instance</div>
                     </div>
                     <div class="mb-3 d-none" id="custom_ami_div">
                         <label for="custom_ami" class="form-label">Custom AMI ID</label>
                         <input type="text" class="form-control" id="custom_ami" name="custom_ami">
+                        <div class="form-text">Enter a specific AMI ID if not listed above</div>
                     </div>
                     <div class="mb-3">
                         <label for="instance_type" class="form-label">Instance Type</label>
@@ -130,7 +130,9 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Create Instance</button>
+                    <button type="submit" class="btn btn-primary" id="createInstanceBtn">
+                        Create Instance
+                    </button>
                 </div>
             </form>
         </div>
@@ -138,21 +140,103 @@
 </div>
 
 <script>
-// Add to your existing JavaScript
 document.addEventListener('DOMContentLoaded', function() {
     // Handle custom AMI selection
     const amiSelect = document.getElementById('ami_id');
     const customAmiDiv = document.getElementById('custom_ami_div');
     
-    amiSelect.addEventListener('change', function() {
-        if (this.value === 'custom') {
-            customAmiDiv.classList.remove('d-none');
-            document.getElementById('custom_ami').setAttribute('required', '');
-        } else {
-            customAmiDiv.classList.add('d-none');
-            document.getElementById('custom_ami').removeAttribute('required');
-        }
-    });
+    if (amiSelect) {
+        amiSelect.addEventListener('change', function() {
+            if (this.value === 'custom') {
+                customAmiDiv.classList.remove('d-none');
+                document.getElementById('custom_ami').setAttribute('required', '');
+            } else {
+                customAmiDiv.classList.add('d-none');
+                document.getElementById('custom_ami').removeAttribute('required');
+            }
+        });
+    }
+
+    // Handle create instance form submission
+    const createInstanceForm = document.getElementById('createInstanceForm');
+    if (createInstanceForm) {
+        createInstanceForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('createInstanceBtn');
+            const originalText = submitBtn.innerHTML;
+            
+            // Disable the button and show loading state
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = `
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                Creating...
+            `;
+            
+            // Submit the form
+            fetch(this.action, {
+                method: 'POST',
+                body: new FormData(this)
+            })
+            .then(response => response.text())
+            .then(html => {
+                // Close the modal
+                const modal = bootstrap.Modal.getInstance(document.getElementById('createInstanceModal'));
+                modal.hide();
+                
+                // Redirect to refresh the page
+                window.location.href = "{{ url_for('index') }}";
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalText;
+                alert('Error creating instance. Please try again.');
+            });
+        });
+    }
+
+    // Reset form when modal is closed
+    const createInstanceModal = document.getElementById('createInstanceModal');
+    if (createInstanceModal) {
+        createInstanceModal.addEventListener('hidden.bs.modal', function () {
+            const form = document.getElementById('createInstanceForm');
+            const submitBtn = document.getElementById('createInstanceBtn');
+            if (form) form.reset();
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = 'Create Instance';
+            }
+        });
+    }
+
+    // Load AMIs
+    fetch('/get_amis')
+        .then(response => response.json())
+        .then(data => {
+            const amiSelect = document.getElementById('ami_id');
+            amiSelect.innerHTML = '<option value="">Select an AMI</option>';
+            
+            if (data.amazon_linux) {
+                amiSelect.innerHTML += `<option value="${data.amazon_linux.id}">Amazon Linux 2023 - ${data.amazon_linux.id}</option>`;
+            }
+            if (data.ubuntu) {
+                amiSelect.innerHTML += `<option value="${data.ubuntu.id}">Ubuntu 22.04 LTS - ${data.ubuntu.id}</option>`;
+            }
+            if (data.windows) {
+                amiSelect.innerHTML += `<option value="${data.windows.id}">Windows Server 2022 - ${data.windows.id}</option>`;
+            }
+            
+            amiSelect.innerHTML += '<option value="custom">Custom AMI ID</option>';
+        })
+        .catch(error => {
+            console.error('Error loading AMIs:', error);
+            const amiSelect = document.getElementById('ami_id');
+            amiSelect.innerHTML = `
+                <option value="">Error loading AMIs</option>
+                <option value="custom">Custom AMI ID</option>
+            `;
+        });
 
     // Load key pairs
     fetch('/get_key_pairs')
@@ -175,114 +259,137 @@ document.addEventListener('DOMContentLoaded', function() {
                 sgSelect.innerHTML += `<option value="${sg.id}">${sg.name} (${sg.id})</option>`;
             });
         });
-});
 
-function updateInstanceRow(instanceId, state, publicIp) {
-    const statusCell = document.getElementById(`instance-${instanceId}-status`);
-    const ipCell = document.getElementById(`instance-${instanceId}-ip`);
-    const actionCell = statusCell.parentElement.querySelector('.instance-action-btn')?.parentElement;
-    
-    if (statusCell) {
-        statusCell.textContent = state;
-    }
-    
-    if (ipCell && publicIp) {
-        ipCell.textContent = publicIp;
-    }
-    
-    if (actionCell) {
-        let buttonHtml = '';
-        if (state === 'running') {
-            buttonHtml = `
-                <button class="btn btn-sm btn-danger instance-action-btn" 
-                        data-instance-id="${instanceId}"
-                        onclick="handleInstanceAction('${instanceId}', 'stop')">
-                    Stop
-                </button>`;
-        } else if (state === 'stopped') {
-            buttonHtml = `
-                <button class="btn btn-sm btn-success instance-action-btn"
-                        data-instance-id="${instanceId}"
-                        onclick="handleInstanceAction('${instanceId}', 'start')">
-                    Start
-                </button>`;
-        } else {
-            buttonHtml = `
-                <button class="btn btn-sm btn-secondary" disabled>
-                    ${state.charAt(0).toUpperCase() + state.slice(1)}...
-                </button>`;
+    // Instance action handlers
+    function updateInstanceRow(instanceId, state, publicIp) {
+        const statusCell = document.getElementById(`instance-${instanceId}-status`);
+        const ipCell = document.getElementById(`instance-${instanceId}-ip`);
+        const actionCell = statusCell.parentElement.querySelector('td:last-child');
+        
+        if (statusCell) {
+            statusCell.textContent = state;
         }
-        actionCell.innerHTML = buttonHtml;
-    }
-}
-
-function handleInstanceAction(instanceId, action) {
-    // Disable the button and show transitional state
-    const button = document.querySelector(`button[data-instance-id="${instanceId}"]`);
-    const statusCell = document.getElementById(`instance-${instanceId}-status`);
-    
-    if (button) {
-        button.disabled = true;
-        button.classList.remove('btn-success', 'btn-danger');
-        button.classList.add('btn-secondary');
-        button.textContent = action === 'start' ? 'Starting...' : 'Stopping...';
-    }
-    
-    if (statusCell) {
-        statusCell.textContent = action === 'start' ? 'pending' : 'stopping';
-    }
-    
-    // Make the API call
-    fetch(`/instance/${instanceId}/${action}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.status === 'success') {
-                // Start polling for status updates
-                pollInstanceStatus(instanceId);
+        
+        if (ipCell && publicIp) {
+            ipCell.textContent = publicIp || 'N/A';
+        }
+        
+        if (actionCell) {
+            let buttonHtml = '';
+            if (state === 'running') {
+                buttonHtml = `
+                    <button class="btn btn-sm btn-danger instance-action-btn" 
+                            data-instance-id="${instanceId}"
+                            onclick="handleInstanceAction('${instanceId}', 'stop')">
+                        Stop
+                    </button>`;
+            } else if (state === 'stopped') {
+                buttonHtml = `
+                    <button class="btn btn-sm btn-success instance-action-btn"
+                            data-instance-id="${instanceId}"
+                            onclick="handleInstanceAction('${instanceId}', 'start')">
+                        Start
+                    </button>`;
             } else {
-                // Show error and restore button
-                alert('Error: ' + data.message);
-                updateInstanceStatus(instanceId);
+                buttonHtml = `
+                    <button class="btn btn-sm btn-secondary" disabled>
+                        <span class="spinner-border spinner-border-sm" role="status"></span>
+                        ${state.charAt(0).toUpperCase() + state.slice(1)}...
+                    </button>`;
             }
-        })
-        .catch(error => {
-            alert('Error: ' + error);
-            updateInstanceStatus(instanceId);
-        });
-}
+            actionCell.innerHTML = buttonHtml;
+        }
+    }
 
-function pollInstanceStatus(instanceId) {
-    const pollInterval = setInterval(() => {
-        updateInstanceStatus(instanceId)
+    function handleInstanceAction(instanceId, action) {
+        const button = document.querySelector(`button[data-instance-id="${instanceId}"]`);
+        const statusCell = document.getElementById(`instance-${instanceId}-status`);
+        const initialState = statusCell.textContent;
+        
+        if (button) {
+            button.disabled = true;
+            button.classList.remove('btn-success', 'btn-danger');
+            button.classList.add('btn-secondary');
+            button.innerHTML = `
+                <span class="spinner-border spinner-border-sm" role="status"></span>
+                ${action === 'start' ? 'Starting...' : 'Stopping...'}`;
+        }
+        
+        if (statusCell) {
+            statusCell.textContent = action === 'start' ? 'pending' : 'stopping';
+        }
+        
+        fetch(`/instance/${instanceId}/${action}`)
+            .then(response => response.json())
             .then(data => {
-                if (data.state === 'running' || data.state === 'stopped') {
-                    clearInterval(pollInterval);
+                if (data.status === 'success') {
+                    pollInstanceStatus(instanceId, action, initialState);
+                } else {
+                    alert('Error: ' + data.message);
+                    updateInstanceStatus(instanceId);
                 }
             })
-            .catch(() => clearInterval(pollInterval));
-    }, 5000); // Poll every 5 seconds
-    
-    // Stop polling after 5 minutes to prevent infinite polling
-    setTimeout(() => clearInterval(pollInterval), 300000);
-}
+            .catch(error => {
+                alert('Error: ' + error);
+                updateInstanceStatus(instanceId);
+            });
+    }
 
-function updateInstanceStatus(instanceId) {
-    return fetch(`/instance/${instanceId}/status`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.state) {
-                updateInstanceRow(instanceId, data.state, data.public_ip);
-            }
-            return data;
+    function pollInstanceStatus(instanceId, action, initialState) {
+        let attempts = 0;
+        const maxAttempts = 60; // 5 minutes with 5-second intervals
+        const expectedFinalState = action === 'start' ? 'running' : 'stopped';
+        
+        const pollInterval = setInterval(() => {
+            attempts++;
+            updateInstanceStatus(instanceId)
+                .then(data => {
+                    console.log(`Poll attempt ${attempts} for ${instanceId}: ${data.state}`);
+                    
+                    if (data.state === expectedFinalState) {
+                        console.log(`Instance ${instanceId} reached expected state: ${expectedFinalState}`);
+                        clearInterval(pollInterval);
+                    }
+                    else if (attempts >= maxAttempts) {
+                        console.log(`Polling timeout for ${instanceId}`);
+                        clearInterval(pollInterval);
+                        setTimeout(() => updateInstanceStatus(instanceId), 2000);
+                    }
+                    else if (data.state === initialState) {
+                        console.log(`Instance ${instanceId} returned to initial state`);
+                        clearInterval(pollInterval);
+                        alert(`Failed to ${action} instance. Please try again.`);
+                    }
+                })
+                .catch(error => {
+                    console.error(`Error polling ${instanceId}:`, error);
+                    clearInterval(pollInterval);
+                });
+        }, 5000);
+    }
+
+    function updateInstanceStatus(instanceId) {
+        return fetch(`/instance/${instanceId}/status`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.state) {
+                    updateInstanceRow(instanceId, data.state, data.public_ip);
+                }
+                return data;
+            })
+            .catch(error => {
+                console.error(`Error updating status for ${instanceId}:`, error);
+                throw error;
+            });
+    }
+
+    // Update all instance statuses periodically
+    setInterval(function() {
+        document.querySelectorAll('.instance-status').forEach(function(element) {
+            const instanceId = element.dataset.instanceId;
+            updateInstanceStatus(instanceId);
         });
-}
-
-// Update all instance statuses periodically
-setInterval(function() {
-    document.querySelectorAll('.instance-status').forEach(function(element) {
-        const instanceId = element.dataset.instanceId;
-        updateInstanceStatus(instanceId);
-    });
-}, 30000); // Update every 30 seconds
+    }, 30000);
+});
 </script>
 {% endblock %} 

@@ -40,18 +40,12 @@ users = load_users()
 
 # AWS Configuration
 def get_aws_credentials():
-    # First try to get from session
-    aws_access_key = session.get('aws_access_key')
-    aws_secret_key = session.get('aws_secret_key')
-    aws_region = session.get('aws_region')
+    aws_access_key = session.get('aws_access_key', os.getenv('AWS_ACCESS_KEY_ID'))
+    aws_secret_key = session.get('aws_secret_key', os.getenv('AWS_SECRET_ACCESS_KEY'))
+    aws_region = session.get('aws_region', os.getenv('AWS_REGION', 'us-east-1'))
     
-    # If not in session, try environment variables
-    if not aws_access_key:
-        aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
-    if not aws_secret_key:
-        aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-    if not aws_region:
-        aws_region = os.getenv('AWS_REGION')
+    if not aws_access_key or not aws_secret_key:
+        raise Exception("AWS credentials not configured. Please set up your AWS credentials in the settings.")
     
     return aws_access_key, aws_secret_key, aws_region
 
@@ -87,59 +81,42 @@ def get_all_regions():
     return regions
 
 def get_instances_for_user(user_id):
-    user_instances = []
-    aws_region = session.get('aws_region', os.getenv('AWS_REGION'))
-    
+    """Get EC2 instances for a specific user"""
     try:
-        if aws_region == 'global':
-            regions = get_all_regions()
-            for region in regions:
-                ec2 = get_ec2_client(region)
-                response = ec2.describe_instances()
-                for reservation in response['Reservations']:
-                    for instance in reservation['Instances']:
-                        name = 'Unnamed'
-                        if 'Tags' in instance:
-                            name_tag = next((tag for tag in instance['Tags'] if tag['Key'] == 'Name'), None)
-                            if name_tag:
-                                name = name_tag['Value']
-                        
-                        user_instances.append({
-                            'id': instance['InstanceId'],
-                            'instance_id': instance['InstanceId'],
-                            'name': name,
-                            'public_ip': instance.get('PublicIpAddress', 'N/A'),
-                            'state': instance['State']['Name'],
-                            'last_activity': datetime.utcnow().isoformat(),
-                            'user_id': user_id,
-                            'region': region
-                        })
-        else:
-            ec2 = get_ec2_client()
-            response = ec2.describe_instances()
-            for reservation in response['Reservations']:
-                for instance in reservation['Instances']:
-                    name = 'Unnamed'
-                    if 'Tags' in instance:
-                        name_tag = next((tag for tag in instance['Tags'] if tag['Key'] == 'Name'), None)
-                        if name_tag:
-                            name = name_tag['Value']
+        ec2_client = get_ec2_client()
+        response = ec2_client.describe_instances()
+        
+        instances = []
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                # Get instance tags
+                tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                
+                # Only include instances that belong to this user
+                if tags.get('UserID') == str(user_id):
+                    # Format the timestamp to be more readable
+                    launch_time = instance.get('LaunchTime', '')
+                    if launch_time:
+                        launch_time = launch_time.strftime('%Y-%m-%d %H:%M:%S')
                     
-                    user_instances.append({
-                        'id': instance['InstanceId'],
+                    # Get public IP from current state or tags
+                    public_ip = instance.get('PublicIpAddress')
+                    if not public_ip and instance['State']['Name'] == 'stopped':
+                        public_ip = tags.get('LastKnownIP')
+                    
+                    instances.append({
                         'instance_id': instance['InstanceId'],
-                        'name': name,
-                        'public_ip': instance.get('PublicIpAddress', 'N/A'),
+                        'name': tags.get('Name', 'Unnamed'),
                         'state': instance['State']['Name'],
-                        'last_activity': datetime.utcnow().isoformat(),
-                        'user_id': user_id,
-                        'region': aws_region
+                        'public_ip': instance.get('PublicIpAddress') or tags.get('LastKnownIP'),
+                        'region': session.get('aws_region', 'us-east-1'),
+                        'last_activity': launch_time
                     })
+        
+        return instances
     except Exception as e:
-        print(f"Error fetching instances: {str(e)}")
-        flash(f"Error fetching instances: {str(e)}", 'error')
-    
-    return user_instances
+        print(f"Error getting instances: {str(e)}")
+        return []
 
 def get_instance_by_id(instance_id, user_id):
     try:
@@ -195,7 +172,8 @@ class Instance:
         self.last_activity = datetime.utcnow()
         self.region = region
         self.instance_type = instance_data.get('InstanceType')
-        self.launch_time = instance_data.get('LaunchTime')
+        launch_time = instance_data.get('LaunchTime')
+        self.launch_time = launch_time.strftime('%Y-%m-%d %H:%M:%S') if launch_time else ''
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -309,13 +287,15 @@ def delete_user(username):
 @app.route('/settings', methods=['GET'])
 @login_required
 def settings():
-    aws_access_key, aws_secret_key, aws_region = get_aws_credentials()
-    return render_template('settings.html',
+    aws_access_key = session.get('aws_access_key', os.getenv('AWS_ACCESS_KEY_ID', ''))
+    aws_secret_key = session.get('aws_secret_key', os.getenv('AWS_SECRET_ACCESS_KEY', ''))
+    aws_region = session.get('aws_region', os.getenv('AWS_REGION', 'us-east-1'))
+    return render_template('settings.html', 
                          aws_access_key=aws_access_key,
                          aws_secret_key=aws_secret_key,
                          aws_region=aws_region)
 
-@app.route('/settings', methods=['POST'])
+@app.route('/save_settings', methods=['POST'])
 @login_required
 def save_settings():
     aws_access_key = request.form.get('aws_access_key')
@@ -323,26 +303,46 @@ def save_settings():
     aws_region = request.form.get('aws_region')
     
     if not all([aws_access_key, aws_secret_key, aws_region]):
-        flash('All fields are required', 'danger')
+        flash('All AWS settings are required', 'danger')
         return redirect(url_for('settings'))
     
     try:
-        # Test the credentials
-        boto3.client('ec2',
+        # Test the credentials before saving
+        test_client = boto3.client('sts',
             aws_access_key_id=aws_access_key,
             aws_secret_access_key=aws_secret_key,
-            region_name=aws_region
-        ).describe_regions()
+            region_name=aws_region if aws_region != 'global' else 'us-east-1'
+        )
         
-        # Save to session
+        # Try to get caller identity to verify credentials
+        test_client.get_caller_identity()
+        
+        # Clear any existing session data first
+        session.pop('aws_access_key', None)
+        session.pop('aws_secret_key', None)
+        session.pop('aws_region', None)
+        
+        # Save to session with permanent flag
+        session.permanent = True
         session['aws_access_key'] = aws_access_key
         session['aws_secret_key'] = aws_secret_key
         session['aws_region'] = aws_region
         
-        flash('AWS credentials saved successfully', 'success')
+        # Also set environment variables as backup
+        os.environ['AWS_ACCESS_KEY_ID'] = aws_access_key
+        os.environ['AWS_SECRET_ACCESS_KEY'] = aws_secret_key
+        os.environ['AWS_REGION'] = aws_region if aws_region != 'global' else 'us-east-1'
+        
+        flash('AWS settings saved successfully', 'success')
         return redirect(url_for('index'))
+        
     except Exception as e:
-        flash(f'Invalid AWS credentials: {str(e)}', 'danger')
+        error_message = str(e)
+        if 'InvalidClientTokenId' in error_message:
+            error_message = 'Invalid AWS Access Key ID'
+        elif 'SignatureDoesNotMatch' in error_message:
+            error_message = 'Invalid AWS Secret Access Key'
+        flash(f'Error validating AWS credentials: {error_message}', 'danger')
         return redirect(url_for('settings'))
 
 @app.route('/instance/<instance_id>/start')
@@ -476,14 +476,14 @@ def create_instance():
         
         ec2 = get_ec2_client()
         
-        # Create the instance
+        # Create a single instance
         response = ec2.run_instances(
             ImageId=ami_id,
             InstanceType=instance_type,
             KeyName=key_name,
             SecurityGroupIds=[security_group],
             MinCount=1,
-            MaxCount=1,
+            MaxCount=1,  # Explicitly set to 1 to ensure only one instance is created
             TagSpecifications=[{
                 'ResourceType': 'instance',
                 'Tags': [
@@ -500,6 +500,64 @@ def create_instance():
     except Exception as e:
         flash(f'Error creating instance: {str(e)}', 'danger')
         return redirect(url_for('index'))
+
+@app.route('/get_amis')
+@login_required
+def get_amis():
+    try:
+        ec2 = get_ec2_client()
+        
+        # Get Amazon Linux 2023 AMI
+        al2023 = ec2.describe_images(
+            Filters=[
+                {'Name': 'name', 'Values': ['al2023-ami-2023.*-x86_64']},
+                {'Name': 'state', 'Values': ['available']},
+                {'Name': 'owner-alias', 'Values': ['amazon']}
+            ],
+            Owners=['amazon']
+        )
+        
+        # Get Ubuntu 22.04 LTS AMI
+        ubuntu = ec2.describe_images(
+            Filters=[
+                {'Name': 'name', 'Values': ['ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*']},
+                {'Name': 'state', 'Values': ['available']},
+                {'Name': 'owner-alias', 'Values': ['amazon']}
+            ],
+            Owners=['099720109477']  # Canonical's AWS account ID
+        )
+        
+        # Get Windows Server 2022 AMI
+        windows = ec2.describe_images(
+            Filters=[
+                {'Name': 'name', 'Values': ['Windows_Server-2022-English-Full-Base-*']},
+                {'Name': 'state', 'Values': ['available']},
+                {'Name': 'owner-alias', 'Values': ['amazon']}
+            ],
+            Owners=['amazon']
+        )
+        
+        # Sort by creation date and get the latest
+        def get_latest(images):
+            if not images['Images']:
+                return None
+            latest = sorted(images['Images'], key=lambda x: x['CreationDate'], reverse=True)[0]
+            return {
+                'id': latest['ImageId'],
+                'name': latest['Name'],
+                'description': latest.get('Description', latest['Name'])
+            }
+        
+        amis = {
+            'amazon_linux': get_latest(al2023),
+            'ubuntu': get_latest(ubuntu),
+            'windows': get_latest(windows)
+        }
+        
+        return jsonify(amis)
+    except Exception as e:
+        print(f"Error fetching AMIs: {str(e)}")
+        return jsonify({})
 
 def init_app():
     # Create data directory if it doesn't exist

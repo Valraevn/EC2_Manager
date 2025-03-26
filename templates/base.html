@@ -3,25 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EC2 Instance Manager</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <title>EC2 Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
-<body class="bg-gray-100">
-    <nav class="bg-white shadow-lg">
-        <div class="max-w-7xl mx-auto px-4">
-            <div class="flex justify-between h-16">
-                <div class="flex">
-                    <div class="flex-shrink-0 flex items-center">
-                        <a href="{{ url_for('index') }}" class="text-xl font-bold text-gray-800">EC2 Manager</a>
-                    </div>
-                </div>
-                <div class="flex items-center">
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('index') }}">EC2 Manager</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
                     {% if current_user.is_authenticated %}
-                    <span class="text-gray-700 mr-4">Welcome, {{ current_user.username }}</span>
-                    <a href="{{ url_for('logout') }}" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md">Logout</a>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('index') }}">Instances</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('settings') }}">Settings</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('user_management') }}">Users</a>
+                    </li>
                     {% endif %}
-                </div>
+                </ul>
+                <ul class="navbar-nav">
+                    {% if current_user.is_authenticated %}
+                    <li class="nav-item">
+                        <span class="nav-link">Welcome, {{ current_user.username }}</span>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
+                    </li>
+                    {% else %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('login') }}">Login</a>
+                    </li>
+                    {% endif %}
+                </ul>
             </div>
         </div>
     </nav>
@@ -40,18 +60,26 @@
         {% block content %}{% endblock %}
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script>
         function updateInstanceStatus(instanceId) {
             $.get(`/instance/${instanceId}/status`, function(data) {
-                $(`#instance-${instanceId}-state`).text(data.state);
-                $(`#instance-${instanceId}-ip`).text(data.public_ip || 'N/A');
+                if (data.state) {
+                    $(`#instance-${instanceId}-status`).text(data.state);
+                    if (data.public_ip) {
+                        $(`#instance-${instanceId}-ip`).text(data.public_ip);
+                    }
+                }
             });
         }
 
         function startInstance(instanceId) {
             $.get(`/instance/${instanceId}/start`, function(data) {
                 if (data.status === 'success') {
-                    setTimeout(() => updateInstanceStatus(instanceId), 5000);
+                    updateInstanceStatus(instanceId);
+                } else {
+                    alert('Failed to start instance: ' + data.message);
                 }
             });
         }
@@ -59,7 +87,9 @@
         function stopInstance(instanceId) {
             $.get(`/instance/${instanceId}/stop`, function(data) {
                 if (data.status === 'success') {
-                    setTimeout(() => updateInstanceStatus(instanceId), 5000);
+                    updateInstanceStatus(instanceId);
+                } else {
+                    alert('Failed to stop instance: ' + data.message);
                 }
             });
         }

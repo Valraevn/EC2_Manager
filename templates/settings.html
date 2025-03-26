@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="mb-0">AWS Settings</h4>
+                </div>
+                <div class="card-body">
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ category }}">{{ message }}</div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+                    
+                    <form method="POST" action="{{ url_for('save_settings') }}">
+                        <div class="mb-3">
+                            <label for="aws_access_key" class="form-label">AWS Access Key ID</label>
+                            <input type="text" class="form-control" id="aws_access_key" name="aws_access_key" 
+                                   value="{{ aws_access_key }}" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="aws_secret_key" class="form-label">AWS Secret Access Key</label>
+                            <input type="password" class="form-control" id="aws_secret_key" name="aws_secret_key" 
+                                   value="{{ aws_secret_key }}" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="aws_region" class="form-label">AWS Region</label>
+                            <select class="form-select" id="aws_region" name="aws_region" required>
+                                <option value="global">Global (All Regions)</option>
+                                <option value="us-east-1" {% if aws_region == 'us-east-1' %}selected{% endif %}>US East (N. Virginia)</option>
+                                <option value="us-east-2" {% if aws_region == 'us-east-2' %}selected{% endif %}>US East (Ohio)</option>
+                                <option value="us-west-1" {% if aws_region == 'us-west-1' %}selected{% endif %}>US West (N. California)</option>
+                                <option value="us-west-2" {% if aws_region == 'us-west-2' %}selected{% endif %}>US West (Oregon)</option>
+                                <option value="af-south-1" {% if aws_region == 'af-south-1' %}selected{% endif %}>Africa (Cape Town)</option>
+                                <option value="ap-east-1" {% if aws_region == 'ap-east-1' %}selected{% endif %}>Asia Pacific (Hong Kong)</option>
+                                <option value="ap-south-1" {% if aws_region == 'ap-south-1' %}selected{% endif %}>Asia Pacific (Mumbai)</option>
+                                <option value="ap-northeast-1" {% if aws_region == 'ap-northeast-1' %}selected{% endif %}>Asia Pacific (Tokyo)</option>
+                                <option value="ap-northeast-2" {% if aws_region == 'ap-northeast-2' %}selected{% endif %}>Asia Pacific (Seoul)</option>
+                                <option value="ap-northeast-3" {% if aws_region == 'ap-northeast-3' %}selected{% endif %}>Asia Pacific (Osaka)</option>
+                                <option value="ap-southeast-1" {% if aws_region == 'ap-southeast-1' %}selected{% endif %}>Asia Pacific (Singapore)</option>
+                                <option value="ap-southeast-2" {% if aws_region == 'ap-southeast-2' %}selected{% endif %}>Asia Pacific (Sydney)</option>
+                                <option value="ca-central-1" {% if aws_region == 'ca-central-1' %}selected{% endif %}>Canada (Central)</option>
+                                <option value="eu-central-1" {% if aws_region == 'eu-central-1' %}selected{% endif %}>Europe (Frankfurt)</option>
+                                <option value="eu-west-1" {% if aws_region == 'eu-west-1' %}selected{% endif %}>Europe (Ireland)</option>
+                                <option value="eu-west-2" {% if aws_region == 'eu-west-2' %}selected{% endif %}>Europe (London)</option>
+                                <option value="eu-west-3" {% if aws_region == 'eu-west-3' %}selected{% endif %}>Europe (Paris)</option>
+                                <option value="eu-south-1" {% if aws_region == 'eu-south-1' %}selected{% endif %}>Europe (Milan)</option>
+                                <option value="eu-north-1" {% if aws_region == 'eu-north-1' %}selected{% endif %}>Europe (Stockholm)</option>
+                                <option value="me-south-1" {% if aws_region == 'me-south-1' %}selected{% endif %}>Middle East (Bahrain)</option>
+                                <option value="sa-east-1" {% if aws_region == 'sa-east-1' %}selected{% endif %}>South America (São Paulo)</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save Settings</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 

@@ -1,0 +1,14 @@
+{
+    "admin": {
+        "id": 1,
+        "username": "admin",
+        "password_hash": "pbkdf2:sha256:600000$SBSMht4GfzrZK5PC$2f80ecc0c31b9154068e43a8fcc9f79b95da7503cca3ac9eb7531ef87c45a857",
+        "instances": []
+    },
+    "tom": {
+        "id": 2,
+        "username": "tom",
+        "password_hash": "pbkdf2:sha256:600000$6eR9dQVbAutFSAHd$f9d663cc1d02ebb75bb6407f134e5a450b2a0efb280d52cd8d84ef4d244cc190",
+        "instances": []
+    }
+}

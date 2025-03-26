@@ -1,60 +1,100 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="bg-white shadow overflow-hidden sm:rounded-md">
-    <div class="px-4 py-5 sm:px-6">
-        <h3 class="text-lg leading-6 font-medium text-gray-900">
-            Your EC2 Instances
-        </h3>
-    </div>
-    <ul class="divide-y divide-gray-200">
-        {% for instance in instances %}
-        <li class="instance-status" data-instance-id="{{ instance.instance_id }}">
-            <div class="px-4 py-4 sm:px-6">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center">
-                        <div class="flex-shrink-0">
-                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
-                                {% if instance.state == 'running' %}
-                                    bg-green-100 text-green-800
-                                {% elif instance.state == 'stopped' %}
-                                    bg-red-100 text-red-800
-                                {% else %}
-                                    bg-yellow-100 text-yellow-800
-                                {% endif %}">
-                                {{ instance.state }}
-                            </span>
-                        </div>
-                        <div class="ml-4">
-                            <h4 class="text-lg font-medium text-gray-900">{{ instance.name }}</h4>
-                            <div class="mt-1 text-sm text-gray-500">
-                                <p>Instance ID: {{ instance.instance_id }}</p>
-                                <p>Public IP: <span id="instance-{{ instance.instance_id }}-ip">{{ instance.public_ip or 'N/A' }}</span></p>
-                                <p>Last Activity: {{ instance.last_activity.strftime('%Y-%m-%d %H:%M:%S') }}</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="flex space-x-2">
-                        {% if instance.state == 'stopped' %}
-                        <button onclick="startInstance('{{ instance.instance_id }}')"
-                                class="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
-                            Start
-                        </button>
-                        {% elif instance.state == 'running' %}
-                        <button onclick="stopInstance('{{ instance.instance_id }}')"
-                                class="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
-                            Stop
-                        </button>
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h4 class="mb-0">EC2 Instances</h4>
+                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addInstanceModal">
+                        Add New Instance
+                    </button>
+                </div>
+                <div class="card-body">
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ category }}">{{ message }}</div>
+                            {% endfor %}
                         {% endif %}
+                    {% endwith %}
+                    
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Instance ID</th>
+                                    <th>Region</th>
+                                    <th>Public IP</th>
+                                    <th>State</th>
+                                    <th>Last Activity</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for instance in instances %}
+                                <tr>
+                                    <td>{{ instance.name }}</td>
+                                    <td>{{ instance.instance_id }}</td>
+                                    <td>{{ instance.region }}</td>
+                                    <td id="instance-{{ instance.instance_id }}-ip">{{ instance.public_ip or 'N/A' }}</td>
+                                    <td id="instance-{{ instance.instance_id }}-status" class="instance-status" data-instance-id="{{ instance.instance_id }}">
+                                        {{ instance.state }}
+                                    </td>
+                                    <td>{{ instance.last_activity }}</td>
+                                    <td>
+                                        {% if instance.state == 'stopped' %}
+                                        <button class="btn btn-sm btn-success" onclick="startInstance('{{ instance.instance_id }}')">
+                                            Start
+                                        </button>
+                                        {% elif instance.state == 'running' %}
+                                        <button class="btn btn-sm btn-danger" onclick="stopInstance('{{ instance.instance_id }}')">
+                                            Stop
+                                        </button>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <td colspan="7" class="text-center">No instances found</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
-        </li>
-        {% else %}
-        <li class="px-4 py-4 sm:px-6">
-            <p class="text-gray-500 text-center">No instances found. Please contact your administrator to get an instance assigned to you.</p>
-        </li>
-        {% endfor %}
-    </ul>
+        </div>
+    </div>
+</div>
+
+<!-- Add Instance Modal -->
+<div class="modal fade" id="addInstanceModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Add New Instance</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" action="{{ url_for('add_instance') }}">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Instance Name</label>
+                        <input type="text" class="form-control" id="name" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="instance_id" class="form-label">Instance ID</label>
+                        <input type="text" class="form-control" id="instance_id" name="instance_id" required>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Instance</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 {% endblock %} 

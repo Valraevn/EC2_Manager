@@ -1,3 +1,5 @@
+Disclaimer: This is mostly AI generated.
+
 # EC2 Instance Manager
 
 A web application for managing EC2 instances with features like:

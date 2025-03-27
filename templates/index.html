@@ -30,6 +30,9 @@
                                     <th>Public IP</th>
                                     <th>State</th>
                                     <th>Last Activity</th>
+                                    {% if is_admin %}
+                                    <th>Owner</th>
+                                    {% endif %}
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -44,6 +47,9 @@
                                         {{ instance.state }}
                                     </td>
                                     <td>{{ instance.last_activity }}</td>
+                                    {% if is_admin %}
+                                    <td>{{ instance.owner }}</td>
+                                    {% endif %}
                                     <td>
                                         {% if instance.state == 'stopped' %}
                                         <button class="btn btn-sm btn-success instance-action-btn" 
@@ -67,7 +73,7 @@
                                 </tr>
                                 {% else %}
                                 <tr>
-                                    <td colspan="7" class="text-center">No instances found</td>
+                                    <td colspan="{% if is_admin %}8{% else %}7{% endif %}" class="text-center">No instances found</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>

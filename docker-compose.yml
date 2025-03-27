@@ -7,14 +7,30 @@ services:
       - "5000:5000"
     volumes:
       - .:/app
+      - web_data:/app/data
     environment:
       - FLASK_APP=app.py
       - FLASK_ENV=development
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION}
-      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY}
+    env_file:
+      - .env
     command: python app.py
 
+  discord:
+    build:
+      context: .
+      dockerfile: Dockerfile.discord
+    volumes:
+      - .:/app
+      - discord_data:/app/data
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - ALLOWED_CHANNEL_ID=${ALLOWED_CHANNEL_ID}
+      - API_BASE_URL=http://web:5000
+    env_file:
+      - .env
+    depends_on:
+      - web
+
 volumes:
-  sqlite_data: 
+  web_data:
+  discord_data: 

@@ -9,6 +9,7 @@ import threading
 import time
 import json
 from werkzeug.security import generate_password_hash, check_password_hash
+import secrets
 
 # Load environment variables
 load_dotenv()
@@ -43,6 +44,15 @@ def get_aws_credentials():
     aws_access_key = session.get('aws_access_key', os.getenv('AWS_ACCESS_KEY_ID'))
     aws_secret_key = session.get('aws_secret_key', os.getenv('AWS_SECRET_ACCESS_KEY'))
     aws_region = session.get('aws_region', os.getenv('AWS_REGION', 'us-east-1'))
+    
+    # Only log credentials debug info when there's an issue
+    if not aws_access_key or not aws_secret_key:
+        print("\nAWS Credential Debug:")
+        print(f"Access Key from session: {'Present' if session.get('aws_access_key') else 'Not present'}")
+        print(f"Access Key from env: {'Present' if os.getenv('AWS_ACCESS_KEY_ID') else 'Not present'}")
+        print(f"Secret Key from session: {'Present' if session.get('aws_secret_key') else 'Not present'}")
+        print(f"Secret Key from env: {'Present' if os.getenv('AWS_SECRET_ACCESS_KEY') else 'Not present'}")
+        print(f"Region being used: {aws_region}")
     
     if not aws_access_key or not aws_secret_key:
         raise Exception("AWS credentials not configured. Please set up your AWS credentials in the settings.")
@@ -80,8 +90,8 @@ def get_all_regions():
     regions = [region['RegionName'] for region in ec2.describe_regions()['Regions']]
     return regions
 
-def get_instances_for_user(user_id):
-    """Get EC2 instances for a specific user"""
+def get_instances_for_user(user_id, include_all=False):
+    """Get EC2 instances for a specific user or all instances for admin"""
     try:
         ec2_client = get_ec2_client()
         response = ec2_client.describe_instances()
@@ -92,17 +102,27 @@ def get_instances_for_user(user_id):
                 # Get instance tags
                 tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
                 
-                # Only include instances that belong to this user
-                if tags.get('UserID') == str(user_id):
-                    # Format the timestamp to be more readable
+                # Include instance if it belongs to the user or if admin requesting all
+                if include_all or tags.get('UserID') == str(user_id):
+                    # Get user info if admin view
+                    user_info = ''
+                    if include_all:
+                        user_id_tag = tags.get('UserID')
+                        discord_id_tag = tags.get('DiscordID')
+                        if user_id_tag:
+                            for user_data in users.values():
+                                if str(user_data['id']) == user_id_tag:
+                                    user_info = f"{user_data['username']}"
+                                    if user_data.get('discord_username'):
+                                        user_info = f"{user_data['discord_username']}"
+                                    elif user_data.get('discord_id'):
+                                        user_info += f" (Discord ID: {user_data['discord_id']})"
+                                    break
+                    
+                    # Format the timestamp
                     launch_time = instance.get('LaunchTime', '')
                     if launch_time:
                         launch_time = launch_time.strftime('%Y-%m-%d %H:%M:%S')
-                    
-                    # Get public IP from current state or tags
-                    public_ip = instance.get('PublicIpAddress')
-                    if not public_ip and instance['State']['Name'] == 'stopped':
-                        public_ip = tags.get('LastKnownIP')
                     
                     instances.append({
                         'instance_id': instance['InstanceId'],
@@ -110,7 +130,8 @@ def get_instances_for_user(user_id):
                         'state': instance['State']['Name'],
                         'public_ip': instance.get('PublicIpAddress') or tags.get('LastKnownIP'),
                         'region': session.get('aws_region', 'us-east-1'),
-                        'last_activity': launch_time
+                        'last_activity': launch_time,
+                        'owner': user_info if include_all else ''
                     })
         
         return instances
@@ -151,9 +172,14 @@ class User(UserMixin):
         self.username = user_data['username']
         self.password_hash = user_data['password_hash']
         self.instances = user_data.get('instances', [])
+        self.role = user_data.get('role', 'user')  # 'admin' or 'user'
+        self.discord_id = user_data.get('discord_id')
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
+    def is_admin(self):
+        return self.role == 'admin'
 
     @staticmethod
     def get(user_id):
@@ -179,44 +205,86 @@ class Instance:
 def load_user(user_id):
     return User.get(int(user_id))
 
+def get_aws_credentials_from_env():
+    """Get AWS credentials from environment variables only"""
+    aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+    aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+    aws_region = os.getenv('AWS_REGION', 'us-east-1')
+    
+    if not aws_access_key or not aws_secret_key:
+        raise Exception("AWS credentials not configured")
+    
+    return aws_access_key, aws_secret_key, aws_region
+
+def get_ec2_client_from_env(region=None):
+    """Get EC2 client using environment variables only"""
+    try:
+        aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+        aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+        aws_region = region or os.getenv('AWS_REGION', 'us-east-1')
+        
+        if not aws_access_key or not aws_secret_key:
+            raise Exception("AWS credentials not configured")
+        
+        # Always use a specific region, never 'global'
+        if aws_region == 'global':
+            aws_region = 'us-east-1'
+            
+        print(f"Creating EC2 client with region: {aws_region}")
+        
+        return boto3.client('ec2',
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            region_name=aws_region
+        )
+    except Exception as e:
+        print(f"Error creating EC2 client: {str(e)}")
+        raise
+
 def check_ssh_sessions():
-    while True:
-        try:
-            # Get all instances for all users
-            aws_region = session.get('aws_region', os.getenv('AWS_REGION'))
-            if aws_region == 'global':
-                regions = get_all_regions()
-                for region in regions:
-                    ec2 = get_ec2_client(region)
+    """Check SSH sessions in background thread"""
+    with app.app_context():
+        while True:
+            try:
+                # Get all instances for all users
+                aws_region = os.getenv('AWS_REGION', 'us-east-1')
+                if aws_region == 'global':
+                    regions = get_all_regions()
+                    for region in regions:
+                        try:
+                            ec2 = get_ec2_client_from_env(region)
+                            response = ec2.describe_instances()
+                            # Process instances...
+                        except Exception as region_error:
+                            print(f"Error checking region {region}: {str(region_error)}")
+                else:
+                    ec2 = get_ec2_client_from_env()
                     response = ec2.describe_instances()
                     # Process instances...
-            else:
-                ec2 = get_ec2_client()
-                response = ec2.describe_instances()
-                # Process instances...
-        except Exception as e:
-            print(f"Error in SSH session check: {str(e)}")
-        time.sleep(300)  # Check every 5 minutes
+            except Exception as e:
+                print(f"Error in SSH session check: {str(e)}")
+            time.sleep(60)  # Check every minute
 
 def check_inactive_instances():
     """Check for and stop instances that have been inactive for 60 minutes"""
-    while True:
-        try:
-            # Get all instances for all users
-            aws_region = session.get('aws_region', os.getenv('AWS_REGION'))
-            if aws_region == 'global':
-                regions = get_all_regions()
-                for region in regions:
-                    ec2 = get_ec2_client(region)
+    with app.app_context():
+        while True:
+            try:
+                # Get all instances for all users
+                aws_region = os.getenv('AWS_REGION', 'us-east-1')
+                if aws_region == 'global':
+                    regions = get_all_regions()
+                    for region in regions:
+                        ec2 = get_ec2_client_from_env(region)
+                        response = ec2.describe_instances()
+                        process_inactive_instances(response, region)
+                else:
+                    ec2 = get_ec2_client_from_env()
                     response = ec2.describe_instances()
-                    process_inactive_instances(response, region)
-            else:
-                ec2 = get_ec2_client()
-                response = ec2.describe_instances()
-                process_inactive_instances(response, aws_region)
-        except Exception as e:
-            print(f"Error checking inactive instances: {str(e)}")
-        time.sleep(300)  # Check every 5 minutes
+                    process_inactive_instances(response, aws_region)
+            except Exception as e:
+                print(f"Error checking inactive instances: {str(e)}")
+            time.sleep(60)  # Check every minute
 
 def process_inactive_instances(response, region):
     """Process instances and stop those that have been inactive for 60 minutes"""
@@ -270,9 +338,10 @@ def index():
         flash(f'AWS credentials not configured: {str(e)}', 'warning')
         return redirect(url_for('settings'))
     
-    # Get instances for the current user
-    user_instances = get_instances_for_user(current_user.id)
-    return render_template('index.html', instances=user_instances)
+    # Get instances based on user role
+    is_admin = current_user.is_admin()
+    user_instances = get_instances_for_user(current_user.id, include_all=is_admin)
+    return render_template('index.html', instances=user_instances, is_admin=is_admin)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -321,7 +390,8 @@ def add_user():
         'id': new_id,
         'username': username,
         'password_hash': generate_password_hash(password),
-        'instances': []
+        'instances': [],
+        'role': 'user'
     }
     
     # Save to file
@@ -378,21 +448,16 @@ def save_settings():
         # Try to get caller identity to verify credentials
         test_client.get_caller_identity()
         
-        # Clear any existing session data first
-        session.pop('aws_access_key', None)
-        session.pop('aws_secret_key', None)
-        session.pop('aws_region', None)
+        # Save to environment variables first (for background tasks)
+        os.environ['AWS_ACCESS_KEY_ID'] = aws_access_key
+        os.environ['AWS_SECRET_ACCESS_KEY'] = aws_secret_key
+        os.environ['AWS_REGION'] = aws_region if aws_region != 'global' else 'us-east-1'
         
-        # Save to session with permanent flag
+        # Then save to session
         session.permanent = True
         session['aws_access_key'] = aws_access_key
         session['aws_secret_key'] = aws_secret_key
         session['aws_region'] = aws_region
-        
-        # Also set environment variables as backup
-        os.environ['AWS_ACCESS_KEY_ID'] = aws_access_key
-        os.environ['AWS_SECRET_ACCESS_KEY'] = aws_secret_key
-        os.environ['AWS_REGION'] = aws_region if aws_region != 'global' else 'us-east-1'
         
         flash('AWS settings saved successfully', 'success')
         return redirect(url_for('index'))
@@ -630,18 +695,587 @@ def get_amis():
         print(f"Error fetching AMIs: {str(e)}")
         return jsonify({})
 
-def init_app():
-    # Create data directory if it doesn't exist
-    os.makedirs('data', exist_ok=True)
+# Admin API endpoints for Discord bot
+@app.route('/api/start/<discord_user>', methods=['GET', 'POST'])
+def api_start_instance(discord_user):
+    try:
+        print(f"\nReceived instance creation request for Discord user: {discord_user}")
+        # Get Discord username from request
+        discord_username = None
+        if request.method == 'POST':
+            data = request.get_json()
+            discord_username = data.get('discord_username') if data else None
+        
+        # Get or create user
+        user_data = get_or_create_discord_user(discord_user, discord_username)
+        if not user_data:
+            print("Failed to get/create user")
+            return jsonify({'status': 'error', 'message': 'User not found'})
+
+        # Get SSH key from request for POST method
+        ssh_key = None
+        if request.method == 'POST':
+            data = request.get_json()
+            ssh_key = data.get('ssh_key') if data else None
+
+        if not ssh_key:
+            print("No SSH key provided")
+            return jsonify({'status': 'error', 'message': 'SSH public key is required'})
+
+        # Validate SSH key format
+        valid_key_types = ['ssh-rsa', 'ssh-ed25519', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521']
+        if not any(ssh_key.startswith(key_type) for key_type in valid_key_types):
+            print(f"Invalid SSH key format. Key starts with: {ssh_key.split()[0] if ' ' in ssh_key else ssh_key[:20]}")
+            return jsonify({
+                'status': 'error', 
+                'message': 'Invalid SSH key format. Supported formats: RSA, Ed25519, ECDSA'
+            })
+
+        # Check for existing instances with proper ownership verification
+        ec2_client = get_ec2_client_from_env()
+        response = ec2_client.describe_instances(
+            Filters=[
+                {
+                    'Name': 'tag:UserID',
+                    'Values': [str(user_data['id'])]
+                },
+                {
+                    'Name': 'tag:DiscordID',
+                    'Values': [str(discord_user)]
+                },
+                {
+                    'Name': 'instance-state-name',
+                    'Values': ['pending', 'running', 'stopping', 'stopped']
+                }
+            ]
+        )
+        
+        # Check for any active or stopped instances that belong to this user
+        active_instances = []
+        stopped_instances = []
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                # Verify instance ownership via tags
+                tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                if (tags.get('UserID') == str(user_data['id']) and 
+                    tags.get('DiscordID') == str(discord_user)):
+                    state = instance['State']['Name']
+                    if state in ['running', 'pending']:
+                        active_instances.append(instance)
+                    elif state == 'stopped':
+                        stopped_instances.append(instance)
+        
+        if active_instances:
+            print(f"User has running instance: {active_instances[0]['InstanceId']}")
+            return jsonify({'status': 'error', 'message': 'You already have a running instance. Please stop it first.'})
+        
+        # Create new instance with SSH key
+        print("Creating new instance...")
+        instance_info = create_instance_from_template(user_data['id'], discord_user, ssh_key)
+        
+        if instance_info:
+            print(f"Instance created successfully: {instance_info['instance_id']}")
+            success_message = (
+                f"New instance created successfully!\n"
+                f"Name: {instance_info['name']}\n"
+                f"Instance ID: {instance_info['instance_id']}\n"
+                f"Region: {instance_info['region']}\n"
+                f"State: {instance_info['state']}\n"
+                f"IP: {instance_info.get('public_ip', 'Not available yet')}\n\n"
+                f"To connect: ssh ec2-user@{instance_info.get('public_ip', 'IP_ADDRESS')}"
+            )
+            return jsonify({
+                'status': 'success',
+                'message': success_message,
+                'instance_id': instance_info.get('instance_id'),
+                'name': instance_info.get('name'),
+                'state': instance_info.get('state'),
+                'region': instance_info.get('region'),
+                'public_ip': instance_info.get('public_ip')
+            })
+        else:
+            print("Instance creation failed with no specific error")
+            return jsonify({'status': 'error', 'message': 'Failed to create instance. Check server logs for details.'})
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Error in api_start_instance: {error_msg}")
+        return jsonify({'status': 'error', 'message': error_msg})
+
+@app.route('/api/stop/<discord_user>', methods=['GET', 'POST'])
+def api_stop_instance(discord_user):
+    try:
+        # Get Discord username from request
+        discord_username = None
+        if request.method == 'POST':
+            data = request.get_json()
+            discord_username = data.get('discord_username') if data else None
+        
+        user = get_or_create_discord_user(discord_user, discord_username)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'User not found'})
+
+        # Get instances using env credentials
+        ec2_client = get_ec2_client_from_env()
+        response = ec2_client.describe_instances(
+            Filters=[
+                {
+                    'Name': 'tag:UserID',
+                    'Values': [str(user['id'])]
+                },
+                {
+                    'Name': 'tag:DiscordID',
+                    'Values': [str(discord_user)]
+                },
+                {
+                    'Name': 'instance-state-name',
+                    'Values': ['running', 'pending']
+                }
+            ]
+        )
+        
+        # Find running instances that belong to this user
+        running_instances = []
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                # Verify instance ownership via tags
+                tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                if (tags.get('UserID') == str(user['id']) and 
+                    tags.get('DiscordID') == str(discord_user)):
+                    running_instances.append(instance)
+        
+        if not running_instances:
+            return jsonify({'status': 'error', 'message': 'No running instances found'})
+        
+        # Stop the first running instance found
+        instance = running_instances[0]
+        instance_id = instance['InstanceId']
+        
+        # Stop the instance
+        ec2_client.stop_instances(InstanceIds=[instance_id])
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Instance {instance_id} is being stopped'
+        })
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Error in api_stop_instance: {error_msg}")
+        if 'AuthFailure' in error_msg:
+            return jsonify({'status': 'error', 'message': 'AWS credentials are invalid. Please contact an administrator.'})
+        return jsonify({'status': 'error', 'message': error_msg})
+
+@app.route('/api/ip/<discord_user>')
+def api_get_ip(discord_user):
+    try:
+        # Get Discord username from query parameter
+        discord_username = request.args.get('username')
+        user = get_or_create_discord_user(discord_user, discord_username)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'Failed to get/create user'})
+
+        # Get instances using env credentials
+        ec2_client = get_ec2_client_from_env()
+        response = ec2_client.describe_instances(
+            Filters=[
+                {
+                    'Name': 'tag:UserID',
+                    'Values': [str(user['id'])]
+                }
+            ]
+        )
+        
+        # First check for running or pending instances
+        active_instances = []
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                state = instance['State']['Name']
+                if state in ['running', 'pending']:
+                    active_instances.append({
+                        'instance_id': instance['InstanceId'],
+                        'state': state,
+                        'public_ip': instance.get('PublicIpAddress', 'N/A')
+                    })
+        
+        if active_instances:
+            instance = active_instances[0]
+            return jsonify({
+                'status': 'success',
+                'ip': instance['public_ip'],
+                'state': instance['state']
+            })
+            
+        # If no running/pending instances, check for stopped ones
+        stopped_instances = []
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                if instance['State']['Name'] == 'stopped':
+                    stopped_instances.append({
+                        'instance_id': instance['InstanceId'],
+                        'state': 'stopped',
+                        'public_ip': None
+                    })
+        
+        if stopped_instances:
+            instance = stopped_instances[0]
+            return jsonify({
+                'status': 'success',
+                'ip': None,
+                'state': 'stopped'
+            })
+            
+        return jsonify({'status': 'error', 'message': 'No instance found. Use !start to create one.'})
+    except Exception as e:
+        print(f"Error in api_get_ip: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)})
+
+@app.route('/api/delete/<discord_user>', methods=['POST'])
+def api_delete_instance(discord_user):
+    try:
+        # Get user data
+        user_data = get_discord_user(discord_user)
+        if not user_data:
+            return jsonify({'status': 'error', 'message': 'User not found'})
+
+        # Get EC2 client
+        ec2_client = get_ec2_client_from_env()
+        
+        # Check for existing instances
+        response = ec2_client.describe_instances(
+            Filters=[
+                {
+                    'Name': 'tag:UserID',
+                    'Values': [str(user_data['id'])]
+                },
+                {
+                    'Name': 'tag:DiscordID',
+                    'Values': [str(discord_user)]
+                },
+                {
+                    'Name': 'instance-state-name',
+                    'Values': ['stopped']
+                }
+            ]
+        )
+        
+        # Find stopped instances that belong to this user
+        stopped_instances = []
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                # Double check instance ownership via tags
+                tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                if (tags.get('UserID') == str(user_data['id']) and 
+                    tags.get('DiscordID') == str(discord_user)):
+                    stopped_instances.append(instance)
+        
+        if not stopped_instances:
+            return jsonify({'status': 'error', 'message': 'No stopped instances found to delete'})
+        
+        # Delete the first stopped instance found
+        instance = stopped_instances[0]
+        instance_id = instance['InstanceId']
+        
+        # Get instance tags for verification
+        tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+        
+        # Final ownership verification
+        if (tags.get('UserID') != str(user_data['id']) or 
+            tags.get('DiscordID') != str(discord_user)):
+            return jsonify({
+                'status': 'error',
+                'message': 'You do not have permission to delete this instance'
+            })
+        
+        # Terminate the instance
+        ec2_client.terminate_instances(InstanceIds=[instance_id])
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Instance {instance_id} has been scheduled for deletion'
+        })
+        
+    except Exception as e:
+        print(f"Error in api_delete_instance: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)})
+
+@app.route('/api/admin/delete/<instance_id>', methods=['POST'])
+def api_admin_delete_instance(instance_id):
+    try:
+        # Get the user making the request
+        data = request.get_json()
+        discord_id = data.get('discord_id')
+        user_data = get_discord_user(discord_id)
+        
+        if not user_data or not user_data.get('is_admin', False):
+            return jsonify({'status': 'error', 'message': 'Unauthorized. Admin access required.'})
+        
+        # Get EC2 client
+        ec2_client = get_ec2_client_from_env()
+        
+        # Verify instance exists
+        try:
+            response = ec2_client.describe_instances(InstanceIds=[instance_id])
+            if not response['Reservations']:
+                return jsonify({'status': 'error', 'message': f'Instance {instance_id} not found'})
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': f'Instance {instance_id} not found'})
+        
+        # Terminate the instance
+        ec2_client.terminate_instances(InstanceIds=[instance_id])
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Instance {instance_id} has been scheduled for deletion'
+        })
+        
+    except Exception as e:
+        print(f"Error in api_admin_delete_instance: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)})
+
+def get_or_create_discord_user(discord_user, discord_username=None):
+    """Get or create a user for a Discord user"""
+    # First try to find existing user
+    for user_data in users.values():
+        if user_data.get('discord_id') == discord_user:
+            # Update username if provided
+            if discord_username and user_data.get('discord_username') != discord_username:
+                user_data['discord_username'] = discord_username
+                save_users(users)
+            return user_data
     
-    # Create default user if no users exist
-    if not users:
-        users['admin'] = {
-            'id': 1,
-            'username': 'admin',
-            'password_hash': generate_password_hash('admin'),
-            'instances': []
+    # Create new user if not found
+    new_id = max([user['id'] for user in users.values()], default=0) + 1
+    username = f"discord_{discord_user}"
+    password = secrets.token_urlsafe(16)
+    
+    users[username] = {
+        'id': new_id,
+        'username': username,
+        'password_hash': generate_password_hash(password),
+        'discord_id': discord_user,
+        'discord_username': discord_username,
+        'role': 'user',
+        'instances': []
+    }
+    
+    save_users(users)
+    return users[username]
+
+def get_discord_user(discord_user):
+    """Get or create user by Discord ID"""
+    # First try to find existing user
+    for user_data in users.values():
+        if user_data.get('discord_id') == str(discord_user):
+            return user_data
+    
+    # Create new user if not found
+    new_id = max([user['id'] for user in users.values()], default=0) + 1
+    username = f"discord_{discord_user}"
+    password = secrets.token_urlsafe(16)  # Generate random password
+    
+    users[username] = {
+        'id': new_id,
+        'username': username,
+        'password_hash': generate_password_hash(password),
+        'discord_id': str(discord_user),
+        'role': 'user',
+        'instances': []
+    }
+    
+    save_users(users)
+    return users[username]
+
+def create_instance_from_template(user_id, discord_user, ssh_key=None):
+    """Create an EC2 instance from template with user's SSH key"""
+    try:
+        print(f"Starting instance creation for user {user_id} (Discord: {discord_user})")
+        ec2_client = get_ec2_client()
+        
+        # Get user data to get Discord username
+        discord_username = None
+        for user_data in users.values():
+            if user_data.get('discord_id') == discord_user:
+                discord_username = user_data.get('discord_username', '').split('#')[0]  # Get username without discriminator
+                break
+        
+        # Create instance name using Discord username if available
+        instance_name = f"discord-{discord_username or discord_user}"
+        print(f"Creating instance with name: {instance_name}")
+        
+        # Get latest Amazon Linux 2023 AMI
+        print("Searching for Amazon Linux 2023 AMI...")
+        response = ec2_client.describe_images(
+            Filters=[
+                {'Name': 'name', 'Values': ['al2023-ami-2023.*-x86_64']},
+                {'Name': 'state', 'Values': ['available']},
+                {'Name': 'owner-alias', 'Values': ['amazon']}
+            ],
+            Owners=['amazon']
+        )
+        
+        if not response['Images']:
+            print("No AMI found matching criteria")
+            raise Exception("No suitable AMI found")
+            
+        # Sort by creation date to get the latest
+        latest_ami = sorted(response['Images'], key=lambda x: x['CreationDate'], reverse=True)[0]
+        print(f"Found AMI: {latest_ami['ImageId']} ({latest_ami['Name']})")
+        
+        # Create key pair name based on user and timestamp
+        key_name = f"ec2-{discord_username or discord_user}-{int(time.time())}"
+        print(f"Creating key pair: {key_name}")
+        
+        # Import the user's SSH key
+        if ssh_key:
+            try:
+                print("Importing SSH key...")
+                ec2_client.import_key_pair(
+                    KeyName=key_name,
+                    PublicKeyMaterial=ssh_key.encode()
+                )
+                print("SSH key imported successfully")
+            except Exception as e:
+                print(f"Error importing key pair: {str(e)}")
+                raise Exception(f"Failed to import SSH key: {str(e)}")
+        
+        # Create security group with user-friendly name
+        sg_name = f"ec2-{discord_username or discord_user}-{int(time.time())}"
+        sg_desc = f"Security group for Discord user {discord_username or discord_user}"
+        
+        try:
+            print("Creating security group...")
+            vpc_response = ec2_client.describe_vpcs(
+                Filters=[{'Name': 'isDefault', 'Values': ['true']}]
+            )
+            if not vpc_response['Vpcs']:
+                raise Exception("No default VPC found")
+                
+            vpc_id = vpc_response['Vpcs'][0]['VpcId']
+            print(f"Using VPC: {vpc_id}")
+            
+            sg_response = ec2_client.create_security_group(
+                GroupName=sg_name,
+                Description=sg_desc,
+                VpcId=vpc_id
+            )
+            
+            security_group_id = sg_response['GroupId']
+            print(f"Created security group: {security_group_id}")
+            
+            # Allow SSH access
+            print("Configuring security group rules...")
+            ec2_client.authorize_security_group_ingress(
+                GroupId=security_group_id,
+                IpPermissions=[
+                    {
+                        'IpProtocol': 'tcp',
+                        'FromPort': 22,
+                        'ToPort': 22,
+                        'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+                    }
+                ]
+            )
+            print("Security group configured successfully")
+        except Exception as e:
+            print(f"Error creating security group: {str(e)}")
+            raise Exception(f"Failed to create security group: {str(e)}")
+        
+        print(f"Creating new instance: {instance_name}")
+        try:
+            response = ec2_client.run_instances(
+                ImageId=latest_ami['ImageId'],
+                InstanceType='t2.micro',
+                MinCount=1,
+                MaxCount=1,
+                KeyName=key_name,
+                SecurityGroupIds=[security_group_id],
+                TagSpecifications=[
+                    {
+                        'ResourceType': 'instance',
+                        'Tags': [
+                            {'Key': 'Name', 'Value': instance_name},
+                            {'Key': 'UserID', 'Value': str(user_id)},
+                            {'Key': 'DiscordID', 'Value': str(discord_user)},
+                            {'Key': 'DiscordUsername', 'Value': discord_username or ''},
+                            {'Key': 'ManagedBy', 'Value': 'Discord-Bot'}
+                        ]
+                    }
+                ]
+            )
+            print("Instance creation initiated successfully")
+        except Exception as e:
+            print(f"Error in run_instances: {str(e)}")
+            raise Exception(f"Failed to launch instance: {str(e)}")
+        
+        instance = response['Instances'][0]
+        instance_id = instance['InstanceId']
+        print(f"Instance ID: {instance_id}")
+        
+        # Wait for instance to be running
+        print("Waiting for instance to be running...")
+        waiter = ec2_client.get_waiter('instance_running')
+        waiter.wait(InstanceIds=[instance_id])
+        print("Instance is now running")
+        
+        # Get instance details with public IP
+        instance_response = ec2_client.describe_instances(InstanceIds=[instance_id])
+        instance = instance_response['Reservations'][0]['Instances'][0]
+        public_ip = instance.get('PublicIpAddress', 'Not available yet')
+        
+        return {
+            'instance_id': instance_id,
+            'name': instance_name,
+            'state': instance['State']['Name'],
+            'region': session.get('aws_region', 'us-east-1'),
+            'public_ip': public_ip
         }
+        
+    except Exception as e:
+        print(f"Error creating instance: {str(e)}")
+        # Clean up resources on failure
+        try:
+            print("Cleaning up resources...")
+            if 'key_name' in locals():
+                print(f"Deleting key pair: {key_name}")
+                ec2_client.delete_key_pair(KeyName=key_name)
+            if 'security_group_id' in locals():
+                print(f"Deleting security group: {security_group_id}")
+                ec2_client.delete_security_group(GroupId=security_group_id)
+            print("Cleanup completed")
+        except Exception as cleanup_error:
+            print(f"Error during cleanup: {str(cleanup_error)}")
+        return None
+
+def init_app():
+    """Initialize the application with default data"""
+    global users
+    
+    try:
+        with open('users.json', 'r') as f:
+            users = json.load(f)
+    except FileNotFoundError:
+        # Create default admin user if no users exist
+        users = {
+            'admin': {
+                'id': 1,
+                'username': 'admin',
+                'password_hash': generate_password_hash('admin'),  # Change this password after first login!
+                'role': 'admin',
+                'instances': []
+            }
+        }
+        save_users(users)
+    except Exception as e:
+        print(f"Error loading users: {str(e)}")
+        users = {}
+    
+    # Ensure at least one admin exists
+    admin_exists = any(user.get('role') == 'admin' for user in users.values())
+    if not admin_exists and users:
+        # Convert first user to admin if no admin exists
+        first_user = next(iter(users.values()))
+        first_user['role'] = 'admin'
         save_users(users)
     
     # Start the SSH session monitoring thread

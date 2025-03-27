@@ -1,3 +1,5 @@
+Disclaimer: How dare you suggest my code is suspiciously clean, AI bloated and squeaky clean!!
+
 # EC2 Manager with Discord Bot Integration
 
 A web-based EC2 instance manager with Discord bot integration that allows users to manage their AWS EC2 instances through both a web interface and Discord commands.

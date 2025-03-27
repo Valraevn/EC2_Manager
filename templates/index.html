@@ -48,13 +48,13 @@
                                         {% if instance.state == 'stopped' %}
                                         <button class="btn btn-sm btn-success instance-action-btn" 
                                                 data-instance-id="{{ instance.instance_id }}"
-                                                onclick="handleInstanceAction('{{ instance.instance_id }}', 'start')">
+                                                data-action="start">
                                             Start
                                         </button>
                                         {% elif instance.state == 'running' %}
                                         <button class="btn btn-sm btn-danger instance-action-btn"
                                                 data-instance-id="{{ instance.instance_id }}"
-                                                onclick="handleInstanceAction('{{ instance.instance_id }}', 'stop')">
+                                                data-action="stop">
                                             Stop
                                         </button>
                                         {% elif instance.state in ['stopping', 'starting', 'pending', 'shutting-down'] %}
@@ -141,6 +141,15 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // Add event listeners for instance action buttons
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('instance-action-btn')) {
+            const instanceId = e.target.dataset.instanceId;
+            const action = e.target.dataset.action;
+            handleInstanceAction(instanceId, action);
+        }
+    });
+
     // Handle custom AMI selection
     const amiSelect = document.getElementById('ami_id');
     const customAmiDiv = document.getElementById('custom_ami_div');
@@ -280,14 +289,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 buttonHtml = `
                     <button class="btn btn-sm btn-danger instance-action-btn" 
                             data-instance-id="${instanceId}"
-                            onclick="handleInstanceAction('${instanceId}', 'stop')">
+                            data-action="stop">
                         Stop
                     </button>`;
             } else if (state === 'stopped') {
                 buttonHtml = `
                     <button class="btn btn-sm btn-success instance-action-btn"
                             data-instance-id="${instanceId}"
-                            onclick="handleInstanceAction('${instanceId}', 'start')">
+                            data-action="start">
                         Start
                     </button>`;
             } else {

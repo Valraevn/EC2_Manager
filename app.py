@@ -198,6 +198,67 @@ def check_ssh_sessions():
             print(f"Error in SSH session check: {str(e)}")
         time.sleep(300)  # Check every 5 minutes
 
+def check_inactive_instances():
+    """Check for and stop instances that have been inactive for 60 minutes"""
+    while True:
+        try:
+            # Get all instances for all users
+            aws_region = session.get('aws_region', os.getenv('AWS_REGION'))
+            if aws_region == 'global':
+                regions = get_all_regions()
+                for region in regions:
+                    ec2 = get_ec2_client(region)
+                    response = ec2.describe_instances()
+                    process_inactive_instances(response, region)
+            else:
+                ec2 = get_ec2_client()
+                response = ec2.describe_instances()
+                process_inactive_instances(response, aws_region)
+        except Exception as e:
+            print(f"Error checking inactive instances: {str(e)}")
+        time.sleep(300)  # Check every 5 minutes
+
+def process_inactive_instances(response, region):
+    """Process instances and stop those that have been inactive for 60 minutes"""
+    current_time = datetime.utcnow()
+    inactive_threshold = timedelta(minutes=60)
+    
+    for reservation in response['Reservations']:
+        for instance in reservation['Instances']:
+            # Skip instances that aren't running
+            if instance['State']['Name'] != 'running':
+                continue
+                
+            # Get instance tags
+            tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+            
+            # Get last activity time from tags
+            last_activity_str = tags.get('LastActivity')
+            if not last_activity_str:
+                continue
+                
+            try:
+                last_activity = datetime.strptime(last_activity_str, '%Y-%m-%d %H:%M:%S')
+                if current_time - last_activity > inactive_threshold:
+                    # Stop the instance
+                    ec2 = get_ec2_client(region)
+                    ec2.stop_instances(InstanceIds=[instance['InstanceId']])
+                    print(f"Stopped inactive instance {instance['InstanceId']}")
+            except Exception as e:
+                print(f"Error processing instance {instance['InstanceId']}: {str(e)}")
+
+def update_instance_activity(instance_id, region):
+    """Update the LastActivity tag for an instance"""
+    try:
+        ec2 = get_ec2_client(region)
+        current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        ec2.create_tags(
+            Resources=[instance_id],
+            Tags=[{'Key': 'LastActivity', 'Value': current_time}]
+        )
+    except Exception as e:
+        print(f"Error updating instance activity: {str(e)}")
+
 # Routes
 @app.route('/')
 @login_required
@@ -348,15 +409,22 @@ def save_settings():
 @app.route('/instance/<instance_id>/start')
 @login_required
 def start_instance(instance_id):
-    instance, region = get_instance_by_id(instance_id, current_user.id)
-    if not instance:
-        return jsonify({'status': 'error', 'message': 'Instance not found'})
-    
     try:
+        instance, region = get_instance_by_id(instance_id, current_user.id)
+        if not instance:
+            print(f"Instance {instance_id} not found")
+            return jsonify({'status': 'error', 'message': 'Instance not found'})
+        
+        print(f"Starting instance {instance_id} in region {region}")
         ec2 = get_ec2_client(region)
-        ec2.start_instances(InstanceIds=[instance_id])
+        response = ec2.start_instances(InstanceIds=[instance_id])
+        print(f"Start response: {response}")
+        
+        # Update the last activity time
+        update_instance_activity(instance_id, region)
         return jsonify({'status': 'success'})
     except Exception as e:
+        print(f"Error starting instance {instance_id}: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)})
 
 @app.route('/instance/<instance_id>/stop')
@@ -385,6 +453,9 @@ def instance_status(instance_id):
         response = ec2.describe_instances(InstanceIds=[instance_id])
         if response['Reservations']:
             instance = response['Reservations'][0]['Instances'][0]
+            # Update the last activity time for running instances
+            if instance['State']['Name'] == 'running':
+                update_instance_activity(instance_id, region)
             return jsonify({
                 'state': instance['State']['Name'],
                 'public_ip': instance.get('PublicIpAddress')
@@ -576,6 +647,10 @@ def init_app():
     # Start the SSH session monitoring thread
     ssh_monitor_thread = threading.Thread(target=check_ssh_sessions, daemon=True)
     ssh_monitor_thread.start()
+    
+    # Start the inactive instances check thread
+    inactive_check_thread = threading.Thread(target=check_inactive_instances, daemon=True)
+    inactive_check_thread.start()
 
 if __name__ == '__main__':
     init_app()

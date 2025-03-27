@@ -115,4 +115,4 @@ FLASK_SECRET_KEY=your_flask_secret_key
 Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
-[Your License Here] 
+[I Got Your License Right Here!! Blam, blam!!] 

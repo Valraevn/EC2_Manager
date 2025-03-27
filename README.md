@@ -8,31 +8,8 @@ A web application for managing EC2 instances with features like:
 - SSH session monitoring
 
 ## Setup
+docker-compose up --build
 
-1. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-2. Create a `.env` file with the following variables:
-```
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
-AWS_REGION=your_region
-FLASK_SECRET_KEY=your_secret_key
-```
-
-3. Initialize the database:
-```bash
-flask db init
-flask db migrate
-flask db upgrade
-```
-
-4. Run the application:
-```bash
-python app.py
-```
 
 ## Features
 

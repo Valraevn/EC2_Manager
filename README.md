@@ -68,7 +68,7 @@ FLASK_SECRET_KEY=your_flask_secret_key
 ### Installation
 1. Clone the repository:
    ```bash
-   git clone <repository_url>
+   git clone https://github.com/Valraevn/EC2_Manager
    cd ec2_manager
    ```
 
